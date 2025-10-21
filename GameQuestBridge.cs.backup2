@@ -1,0 +1,846 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using System.Linq;
+using UnityEngine;
+using HarmonyLib;
+
+namespace ErenshorQuestGuru
+{
+    /// <summary>
+    /// Bridge between game's quest system and our plugin
+    /// Uses reflection to read quest data from game's Assembly-CSharp
+    /// </summary>
+    public static class GameQuestBridge
+    {
+        private static Type questManagerType;
+        private static Type questType;
+        private static Type questJournalType;
+        private static Type questDBType;
+        private static Type playerQuestType;
+        private static Type questObjectiveType;
+
+        private static object questManagerInstance;
+        private static object questDBInstance;
+        private static object questLogInstance;
+        private static FieldInfo activeQuestsField;
+        private static FieldInfo completedQuestsField;
+        private static FieldInfo questDatabaseField;
+        private static FieldInfo questLogTitlesField;
+        private static bool initialized = false;
+
+        // Cache discovered field/property names
+        private static Dictionary<string, MemberInfo> cachedMembers = new Dictionary<string, MemberInfo>();
+
+        public static void Initialize()
+        {
+            if (initialized) return;
+
+            try
+            {
+                QuestGuruPlugin.Logger.LogInfo("Initializing GameQuestBridge...");
+
+                // Find game's Assembly
+                Assembly gameAssembly = Assembly.Load("Assembly-CSharp");
+
+                // Search for quest-related types with multiple naming patterns
+                var allTypes = gameAssembly.GetTypes();
+
+                // Find Quest Manager
+                questManagerType = FindTypeByNames(allTypes,
+                    "QuestManager", "QuestSystem", "PlayerQuestManager", "QuestController");
+
+                // Find Quest type
+                questType = FindTypeByNames(allTypes,
+                    "Quest", "QuestData", "PlayerQuest", "QuestInfo");
+
+                // Find Quest Journal/Log
+                questJournalType = FindTypeByNames(allTypes,
+                    "QuestJournal", "Journal", "QuestLog", "QuestBook");
+
+                // Find QuestDB
+                questDBType = FindTypeByNames(allTypes,
+                    "QuestDB", "QuestDatabase");
+
+                // Find PlayerQuest (might be different from Quest)
+                playerQuestType = FindTypeByNames(allTypes,
+                    "PlayerQuest", "ActiveQuest", "QuestInstance");
+
+                // Find Quest Objective type
+                questObjectiveType = FindTypeByNames(allTypes,
+                    "QuestObjective", "Objective", "QuestGoal", "QuestTask");
+
+                LogFoundTypes();
+
+                // Try to find the quest manager instance
+                if (questManagerType != null)
+                {
+                    FindQuestManagerInstance();
+                }
+
+                // Try to find QuestDB instance
+                if (questDBType != null)
+                {
+                    FindQuestDBInstance();
+                }
+
+                // Try to find QuestLog instance
+                if (questJournalType != null)
+                {
+                    FindQuestLogInstance();
+                }
+
+                initialized = true;
+                QuestGuruPlugin.Logger.LogInfo("GameQuestBridge initialization complete!");
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Failed to initialize GameQuestBridge: {ex.Message}");
+                QuestGuruPlugin.Logger.LogError($"Stack trace: {ex.StackTrace}");
+            }
+        }
+
+        private static Type FindTypeByNames(Type[] allTypes, params string[] names)
+        {
+            foreach (string name in names)
+            {
+                var type = allTypes.FirstOrDefault(t =>
+                    t.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                if (type != null)
+                {
+                    return type;
+                }
+            }
+            return null;
+        }
+
+        private static void LogFoundTypes()
+        {
+            if (questManagerType != null)
+                QuestGuruPlugin.Logger.LogInfo($"✓ Found QuestManager: {questManagerType.FullName}");
+            else
+                QuestGuruPlugin.Logger.LogWarning("✗ QuestManager type not found");
+
+            if (questType != null)
+                QuestGuruPlugin.Logger.LogInfo($"✓ Found Quest: {questType.FullName}");
+            else
+                QuestGuruPlugin.Logger.LogWarning("✗ Quest type not found");
+
+            if (questJournalType != null)
+                QuestGuruPlugin.Logger.LogInfo($"✓ Found QuestJournal: {questJournalType.FullName}");
+            else
+                QuestGuruPlugin.Logger.LogWarning("✗ QuestJournal type not found");
+
+            if (playerQuestType != null)
+                QuestGuruPlugin.Logger.LogInfo($"✓ Found PlayerQuest: {playerQuestType.FullName}");
+
+            if (questObjectiveType != null)
+                QuestGuruPlugin.Logger.LogInfo($"✓ Found QuestObjective: {questObjectiveType.FullName}");
+        }
+
+        private static void FindQuestManagerInstance()
+        {
+            try
+            {
+                // Try to find as singleton instance
+                var instanceField = questManagerType.GetField("Instance",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (instanceField != null)
+                {
+                    questManagerInstance = instanceField.GetValue(null);
+                    if (questManagerInstance != null)
+                    {
+                        QuestGuruPlugin.Logger.LogInfo("Found QuestManager.Instance");
+                        AnalyzeQuestManager();
+                        return;
+                    }
+                }
+
+                // Try to find in scene
+                var foundObject = UnityEngine.Object.FindObjectOfType(questManagerType);
+                if (foundObject != null)
+                {
+                    questManagerInstance = foundObject;
+                    QuestGuruPlugin.Logger.LogInfo("Found QuestManager in scene");
+                    AnalyzeQuestManager();
+                    return;
+                }
+
+                QuestGuruPlugin.Logger.LogWarning("QuestManager instance not found yet (might initialize later)");
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error finding QuestManager instance: {ex.Message}");
+            }
+        }
+
+        private static void AnalyzeQuestManager()
+        {
+            if (questManagerInstance == null) return;
+
+            QuestGuruPlugin.Logger.LogInfo("Analyzing QuestManager fields...");
+
+            // Look for fields that might contain active quests
+            var fields = questManagerType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            foreach (var field in fields)
+            {
+                string fieldName = field.Name.ToLower();
+                if (fieldName.Contains("active") || fieldName.Contains("current") ||
+                    fieldName.Contains("quest") || fieldName.Contains("player"))
+                {
+                    QuestGuruPlugin.Logger.LogInfo($"  Interesting field: {field.FieldType.Name} {field.Name}");
+
+                    if (fieldName.Contains("active") && fieldName.Contains("quest"))
+                    {
+                        activeQuestsField = field;
+                    }
+                    else if (fieldName.Contains("completed") && fieldName.Contains("quest"))
+                    {
+                        completedQuestsField = field;
+                    }
+                }
+            }
+
+            // Also check properties
+            var properties = questManagerType.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+            foreach (var prop in properties)
+            {
+                string propName = prop.Name.ToLower();
+                if (propName.Contains("active") || propName.Contains("current") ||
+                    propName.Contains("quest") || propName.Contains("player"))
+                {
+                    QuestGuruPlugin.Logger.LogInfo($"  Interesting property: {prop.PropertyType.Name} {prop.Name}");
+                }
+            }
+        }
+
+        private static void FindQuestDBInstance()
+        {
+            try
+            {
+                // Try to find in scene
+                var foundObject = UnityEngine.Object.FindObjectOfType(questDBType);
+                if (foundObject != null)
+                {
+                    questDBInstance = foundObject;
+                    QuestGuruPlugin.Logger.LogInfo($"Found QuestDB in scene on GameObject: {((MonoBehaviour)foundObject).gameObject.name}");
+
+                    // Get QuestDatabase field
+                    questDatabaseField = questDBType.GetField("QuestDatabase", BindingFlags.Public | BindingFlags.Instance);
+                    if (questDatabaseField != null)
+                    {
+                        QuestGuruPlugin.Logger.LogInfo("Found QuestDatabase field");
+                    }
+                    return;
+                }
+
+                QuestGuruPlugin.Logger.LogWarning("QuestDB instance not found");
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error finding QuestDB instance: {ex.Message}");
+            }
+        }
+
+        private static void FindQuestLogInstance()
+        {
+            try
+            {
+                // Try to find in scene
+                var foundObject = UnityEngine.Object.FindObjectOfType(questJournalType);
+                if (foundObject != null)
+                {
+                    questLogInstance = foundObject;
+                    QuestGuruPlugin.Logger.LogInfo($"Found QuestLog in scene on GameObject: {((MonoBehaviour)foundObject).gameObject.name}");
+
+                    // Get Titles field
+                    questLogTitlesField = questJournalType.GetField("Titles", BindingFlags.Public | BindingFlags.Instance);
+                    if (questLogTitlesField != null)
+                    {
+                        QuestGuruPlugin.Logger.LogInfo("Found Titles field in QuestLog");
+                    }
+                    return;
+                }
+
+                QuestGuruPlugin.Logger.LogWarning("QuestLog instance not found yet (might initialize later)");
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error finding QuestLog instance: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Get all active quests from the game
+        /// </summary>
+        public static List<QuestData> GetActiveQuests()
+        {
+            List<QuestData> quests = new List<QuestData>();
+
+            try
+            {
+                if (!initialized) Initialize();
+
+                // Re-find instances if not found during init
+                if (questLogInstance == null && questJournalType != null)
+                {
+                    FindQuestLogInstance();
+                }
+
+                if (questDBInstance == null && questDBType != null)
+                {
+                    FindQuestDBInstance();
+                }
+
+                if (questLogInstance == null || questDBInstance == null)
+                {
+                    QuestGuruPlugin.Logger.LogWarning($"Cannot get active quests - QuestLog: {(questLogInstance != null ? "OK" : "NULL")}, QuestDB: {(questDBInstance != null ? "OK" : "NULL")}");
+                    return quests;
+                }
+
+                // Get active quest titles from QuestLog
+                var titlesObj = questLogTitlesField?.GetValue(questLogInstance);
+                if (titlesObj == null)
+                {
+                    QuestGuruPlugin.Logger.LogWarning("Titles field is null");
+                    return quests;
+                }
+
+                // titlesObj is List<TextMeshProUGUI> - we need to get the text from each
+                if (titlesObj is System.Collections.IList titlesList)
+                {
+                    QuestGuruPlugin.Logger.LogInfo($"Found {titlesList.Count} quest titles");
+
+                    // Get all quests from database
+                    var questDatabase = questDatabaseField?.GetValue(questDBInstance);
+                    if (questDatabase == null)
+                    {
+                        QuestGuruPlugin.Logger.LogWarning("QuestDatabase is null");
+                        return quests;
+                    }
+
+                    System.Array questsArray = questDatabase as System.Array;
+                    if (questsArray == null)
+                    {
+                        QuestGuruPlugin.Logger.LogWarning("QuestDatabase is not an array");
+                        return quests;
+                    }
+
+                    // For each title, find the matching quest in database
+                    foreach (var titleObj in titlesList)
+                    {
+                        if (titleObj == null) continue;
+
+                        // Get the text from TextMeshProUGUI
+                        string questTitle = GetFieldOrPropertyValue<string>(titleObj, "text", "m_text", "Text");
+
+                        if (string.IsNullOrEmpty(questTitle)) continue;
+
+                        QuestGuruPlugin.Logger.LogInfo($"Looking for quest with title: {questTitle}");
+
+                        // Find matching quest in database
+                        foreach (var gameQuest in questsArray)
+                        {
+                            if (gameQuest == null) continue;
+
+                            string questName = GetFieldOrPropertyValue<string>(gameQuest, "QuestName", "name");
+
+                            if (!string.IsNullOrEmpty(questName) && questName.Equals(questTitle, StringComparison.OrdinalIgnoreCase))
+                            {
+                                var questData = ConvertSingleQuest(gameQuest);
+                                if (questData != null)
+                                {
+                                    quests.Add(questData);
+                                    QuestGuruPlugin.Logger.LogInfo($"  Found matching quest: {questName}");
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error getting active quests: {ex.Message}");
+                QuestGuruPlugin.Logger.LogError($"Stack trace: {ex.StackTrace}");
+            }
+
+            return quests;
+        }
+
+        private static List<QuestData> ConvertGameQuestsToQuestData(object questsObject)
+        {
+            List<QuestData> result = new List<QuestData>();
+
+            if (questsObject == null)
+                return result;
+
+            try
+            {
+                // Handle List<Quest>
+                if (questsObject is System.Collections.IList list)
+                {
+                    foreach (var gameQuest in list)
+                    {
+                        if (gameQuest != null)
+                        {
+                            var questData = ConvertSingleQuest(gameQuest);
+                            if (questData != null)
+                                result.Add(questData);
+                        }
+                    }
+                }
+                // Handle Dictionary<int, Quest> or similar
+                else if (questsObject is System.Collections.IDictionary dict)
+                {
+                    foreach (var gameQuest in dict.Values)
+                    {
+                        if (gameQuest != null)
+                        {
+                            var questData = ConvertSingleQuest(gameQuest);
+                            if (questData != null)
+                                result.Add(questData);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error converting quests: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        private static QuestData ConvertSingleQuest(object gameQuest)
+        {
+            try
+            {
+                Type questObjType = gameQuest.GetType();
+                QuestData questData = new QuestData();
+
+                // Read quest fields based on Erenshor's Quest structure
+                questData.Name = GetFieldOrPropertyValue<string>(gameQuest, "QuestName", "name");
+                questData.Description = GetFieldOrPropertyValue<string>(gameQuest, "QuestDesc", "Description", "Desc");
+
+                // Use DBName as ID (it's the unique identifier in Erenshor)
+                string dbName = GetFieldOrPropertyValue<string>(gameQuest, "DBName");
+                questData.QuestID = !string.IsNullOrEmpty(dbName) ? dbName.GetHashCode() : 0;
+
+                // Quest is active if it's in the QuestLog Titles
+                questData.Status = QuestStatus.Active;
+
+                // Get RequiredItems as objectives
+                var requiredItemsObj = GetFieldOrPropertyValue<object>(gameQuest, "RequiredItems");
+                if (requiredItemsObj != null)
+                {
+                    questData.AllObjectives = ConvertRequiredItemsToObjectives(requiredItemsObj);
+                    if (questData.AllObjectives.Count > 0)
+                    {
+                        questData.CurrentObjective = questData.AllObjectives.FirstOrDefault(o => !o.IsCompleted);
+                        if (questData.CurrentObjective == null)
+                        {
+                            // If all objectives completed, quest is ready to turn in
+                            questData.Status = QuestStatus.Completed;
+                            questData.CurrentObjective = new QuestObjective
+                            {
+                                Description = "Turn in quest",
+                                Type = QuestObjectiveType.TurnIn,
+                                IsCompleted = false
+                            };
+                        }
+                    }
+                }
+                else
+                {
+                    // No required items means this might be a talk-to or turn-in quest
+                    questData.CurrentObjective = new QuestObjective
+                    {
+                        Description = questData.Description ?? "Complete quest objective",
+                        Type = QuestObjectiveType.TalkTo,
+                        IsCompleted = false
+                    };
+                }
+
+                // Only return if we got at least a name
+                if (!string.IsNullOrEmpty(questData.Name))
+                {
+                    return questData;
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error converting single quest: {ex.Message}");
+            }
+
+            return null;
+        }
+
+        private static List<QuestObjective> ConvertRequiredItemsToObjectives(object requiredItemsObj)
+        {
+            List<QuestObjective> result = new List<QuestObjective>();
+
+            try
+            {
+                if (requiredItemsObj is System.Collections.IList itemsList)
+                {
+                    for (int i = 0; i < itemsList.Count; i++)
+                    {
+                        var item = itemsList[i];
+                        if (item == null) continue;
+
+                        QuestObjective objective = new QuestObjective();
+                        objective.Type = QuestObjectiveType.Collect;
+
+                        // Get item name
+                        string itemName = GetFieldOrPropertyValue<string>(item, "ItemName", "Name", "name");
+                        int amount = GetFieldOrPropertyValue<int>(item, "Amount", "Quantity", "Count");
+
+                        if (amount <= 0) amount = 1;
+
+                        objective.Description = $"Collect {itemName}";
+                        objective.RequiredItem = itemName;
+                        objective.RequiredAmount = amount;
+                        objective.CurrentAmount = 0; // TODO: Get from player inventory
+                        objective.IsCompleted = false;
+
+                        if (!string.IsNullOrEmpty(itemName))
+                        {
+                            result.Add(objective);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error converting required items: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        private static List<QuestObjective> ConvertObjectives(object objectivesObj)
+        {
+            List<QuestObjective> result = new List<QuestObjective>();
+
+            try
+            {
+                if (objectivesObj is System.Collections.IList list)
+                {
+                    foreach (var obj in list)
+                    {
+                        if (obj != null)
+                        {
+                            QuestObjective objective = new QuestObjective();
+                            objective.Description = GetFieldOrPropertyValue<string>(obj, "Description", "Text", "Desc", "description");
+                            objective.IsCompleted = GetFieldOrPropertyValue<bool>(obj, "IsCompleted", "Completed", "Done", "isComplete");
+
+                            // Try to get position
+                            var posObj = GetFieldOrPropertyValue<object>(obj, "Position", "TargetPosition", "Location", "position");
+                            if (posObj != null && posObj is Vector3)
+                            {
+                                objective.TargetPosition = (Vector3)posObj;
+                            }
+
+                            objective.ZoneName = GetFieldOrPropertyValue<string>(obj, "Zone", "ZoneName", "Area", "MapName");
+                            objective.TargetNPCName = GetFieldOrPropertyValue<string>(obj, "TargetNPC", "NPCName", "Target");
+                            objective.RequiredAmount = GetFieldOrPropertyValue<int>(obj, "RequiredAmount", "TargetAmount", "Goal");
+                            objective.CurrentAmount = GetFieldOrPropertyValue<int>(obj, "CurrentAmount", "Progress", "Count");
+
+                            if (!string.IsNullOrEmpty(objective.Description))
+                            {
+                                result.Add(objective);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error converting objectives: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        private static T GetFieldOrPropertyValue<T>(object obj, params string[] names)
+        {
+            if (obj == null) return default(T);
+
+            Type type = obj.GetType();
+
+            foreach (string name in names)
+            {
+                try
+                {
+                    // Try field first
+                    var field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (field != null)
+                    {
+                        var value = field.GetValue(obj);
+                        if (value != null && value is T)
+                            return (T)value;
+                        else if (value != null)
+                        {
+                            try { return (T)Convert.ChangeType(value, typeof(T)); }
+                            catch { }
+                        }
+                    }
+
+                    // Try property
+                    var property = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                    if (property != null && property.CanRead)
+                    {
+                        var value = property.GetValue(obj);
+                        if (value != null && value is T)
+                            return (T)value;
+                        else if (value != null)
+                        {
+                            try { return (T)Convert.ChangeType(value, typeof(T)); }
+                            catch { }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return default(T);
+        }
+
+        /// <summary>
+        /// Get quest by ID from game
+        /// </summary>
+        public static QuestData GetQuestByID(int questID)
+        {
+            try
+            {
+                if (!initialized) Initialize();
+
+                var allQuests = GetActiveQuests();
+                return allQuests.FirstOrDefault(q => q.QuestID == questID);
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error getting quest by ID: {ex.Message}");
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Try to refresh the quest manager instance (call if it wasn't found on init)
+        /// </summary>
+        public static void RefreshQuestManager()
+        {
+            if (questManagerType != null)
+            {
+                FindQuestManagerInstance();
+            }
+        }
+
+        /// <summary>
+        /// Debug: List all types in Assembly-CSharp that contain "quest" in name
+        /// </summary>
+        public static void DebugListQuestTypes()
+        {
+            try
+            {
+                Assembly gameAssembly = Assembly.Load("Assembly-CSharp");
+                QuestGuruPlugin.Logger.LogInfo("=== Quest-related types in Assembly-CSharp ===");
+
+                int questTypeCount = 0;
+                foreach (Type type in gameAssembly.GetTypes())
+                {
+                    string typeName = type.Name.ToLower();
+                    if (typeName.Contains("quest") || typeName.Contains("journal") ||
+                        typeName.Contains("objective") || typeName.Contains("task"))
+                    {
+                        questTypeCount++;
+                        QuestGuruPlugin.Logger.LogInfo($"\n>>> Type: {type.FullName}");
+                        QuestGuruPlugin.Logger.LogInfo($"    Base: {type.BaseType?.FullName ?? "none"}");
+
+                        // List static fields/properties (like Instance)
+                        var staticFields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                        if (staticFields.Length > 0)
+                        {
+                            QuestGuruPlugin.Logger.LogInfo("    Static Fields:");
+                            foreach (var field in staticFields)
+                            {
+                                QuestGuruPlugin.Logger.LogInfo($"      {field.FieldType.Name} {field.Name}");
+                            }
+                        }
+
+                        // List instance fields
+                        var fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (fields.Length > 0)
+                        {
+                            QuestGuruPlugin.Logger.LogInfo("    Instance Fields:");
+                            foreach (var field in fields)
+                            {
+                                QuestGuruPlugin.Logger.LogInfo($"      {field.FieldType.Name} {field.Name}");
+                            }
+                        }
+
+                        // List properties
+                        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                        if (properties.Length > 0)
+                        {
+                            QuestGuruPlugin.Logger.LogInfo("    Properties:");
+                            foreach (var prop in properties)
+                            {
+                                QuestGuruPlugin.Logger.LogInfo($"      {prop.PropertyType.Name} {prop.Name}");
+                            }
+                        }
+
+                        // List methods (to understand the API)
+                        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                        if (methods.Length > 0 && methods.Length < 20) // Don't spam if too many
+                        {
+                            QuestGuruPlugin.Logger.LogInfo("    Public Methods:");
+                            foreach (var method in methods)
+                            {
+                                if (!method.Name.StartsWith("get_") && !method.Name.StartsWith("set_"))
+                                {
+                                    var parameters = string.Join(", ", method.GetParameters().Select(p => $"{p.ParameterType.Name} {p.Name}"));
+                                    QuestGuruPlugin.Logger.LogInfo($"      {method.ReturnType.Name} {method.Name}({parameters})");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                QuestGuruPlugin.Logger.LogInfo($"\n=== Found {questTypeCount} quest-related types ===");
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error listing quest types: {ex.Message}");
+                QuestGuruPlugin.Logger.LogError($"Stack: {ex.StackTrace}");
+            }
+        }
+
+        /// <summary>
+        /// Debug: List all MonoBehaviour components in scene that might be quest-related
+        /// </summary>
+        public static void DebugListQuestComponents()
+        {
+            try
+            {
+                QuestGuruPlugin.Logger.LogInfo("=== Quest-related components in scene ===");
+
+                var allObjects = UnityEngine.Object.FindObjectsOfType<MonoBehaviour>();
+                int foundCount = 0;
+
+                foreach (var obj in allObjects)
+                {
+                    string typeName = obj.GetType().Name.ToLower();
+                    if (typeName.Contains("quest") || typeName.Contains("journal") ||
+                        typeName.Contains("player") || typeName.Contains("ui"))
+                    {
+                        foundCount++;
+                        QuestGuruPlugin.Logger.LogInfo($"\nGameObject: {obj.gameObject.name}");
+                        QuestGuruPlugin.Logger.LogInfo($"  Component: {obj.GetType().FullName}");
+
+                        // Try to read some field values if it's a quest-related component
+                        if (typeName.Contains("quest") || typeName.Contains("journal"))
+                        {
+                            DebugPrintComponentValues(obj);
+                        }
+                    }
+                }
+
+                QuestGuruPlugin.Logger.LogInfo($"\n=== Found {foundCount} components ===");
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error listing quest components: {ex.Message}");
+            }
+        }
+
+        private static void DebugPrintComponentValues(MonoBehaviour component)
+        {
+            try
+            {
+                Type type = component.GetType();
+
+                // Print all public fields with their current values
+                var fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance);
+                foreach (var field in fields)
+                {
+                    try
+                    {
+                        var value = field.GetValue(component);
+                        if (value != null)
+                        {
+                            // If it's a list or array, show count
+                            if (value is System.Collections.IList list)
+                            {
+                                QuestGuruPlugin.Logger.LogInfo($"    {field.Name} = {field.FieldType.Name} [Count: {list.Count}]");
+
+                                // Show first few items
+                                if (list.Count > 0 && list.Count <= 5)
+                                {
+                                    for (int i = 0; i < list.Count; i++)
+                                    {
+                                        QuestGuruPlugin.Logger.LogInfo($"      [{i}] = {list[i]}");
+                                    }
+                                }
+                            }
+                            else if (value is System.Collections.IDictionary dict)
+                            {
+                                QuestGuruPlugin.Logger.LogInfo($"    {field.Name} = {field.FieldType.Name} [Count: {dict.Count}]");
+                            }
+                            else
+                            {
+                                QuestGuruPlugin.Logger.LogInfo($"    {field.Name} = {value}");
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                // Print properties
+                var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                foreach (var prop in properties)
+                {
+                    if (prop.CanRead && prop.GetIndexParameters().Length == 0)
+                    {
+                        try
+                        {
+                            var value = prop.GetValue(component);
+                            if (value != null)
+                            {
+                                if (value is System.Collections.IList list)
+                                {
+                                    QuestGuruPlugin.Logger.LogInfo($"    {prop.Name} = {prop.PropertyType.Name} [Count: {list.Count}]");
+                                }
+                                else if (value is System.Collections.IDictionary dict)
+                                {
+                                    QuestGuruPlugin.Logger.LogInfo($"    {prop.Name} = {prop.PropertyType.Name} [Count: {dict.Count}]");
+                                }
+                                else if (prop.PropertyType.IsPrimitive || prop.PropertyType == typeof(string))
+                                {
+                                    QuestGuruPlugin.Logger.LogInfo($"    {prop.Name} = {value}");
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"  Error reading component values: {ex.Message}");
+            }
+        }
+    }
+
+    // Harmony patches will go here once we know the actual class names
+    // [HarmonyPatch(typeof(GameQuestClass), "AcceptQuest")]
+    // public class QuestAcceptedPatch
+    // {
+    //     static void Postfix(object quest)
+    //     {
+    //         // Handle quest accepted
+    //     }
+    // }
+}

@@ -1,0 +1,1089 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEngine;
+
+namespace ErenshorQuestGuru
+{
+    /// <summary>
+    /// UI Theme color configuration
+    /// </summary>
+    public class UITheme
+    {
+        public string Name;
+        public Color BackgroundColor;
+        public Color HeaderColor;
+        public Color QuestTitleColor;
+        public Color ObjectiveColor;
+        public Color ZoneColor;
+        public Color ProgressColor;
+
+        public static UITheme GetTheme(string themeName)
+        {
+            switch (themeName)
+            {
+                case "Transparent":
+                    return new UITheme
+                    {
+                        Name = "Transparent",
+                        BackgroundColor = new Color(0f, 0f, 0f, 0.3f), // Very transparent
+                        HeaderColor = new Color(0.8f, 0.9f, 1f, 1f), // Light blue
+                        QuestTitleColor = new Color(1f, 1f, 1f, 1f), // White
+                        ObjectiveColor = new Color(0.9f, 0.9f, 0.9f, 1f), // Light gray
+                        ZoneColor = new Color(0.7f, 0.9f, 1f, 1f), // Light blue
+                        ProgressColor = new Color(0.5f, 1f, 0.5f, 1f) // Light green
+                    };
+
+                case "Gothic":
+                    return new UITheme
+                    {
+                        Name = "Gothic",
+                        BackgroundColor = new Color(0.1f, 0.04f, 0.18f, 0.95f), // Dark purple #1a0a2e
+                        HeaderColor = new Color(0.75f, 0.75f, 0.75f, 1f), // Silver
+                        QuestTitleColor = new Color(0.85f, 0.6f, 0.6f, 1f), // Light red
+                        ObjectiveColor = new Color(0.9f, 0.9f, 0.9f, 1f), // Light gray
+                        ZoneColor = new Color(0.6f, 0.4f, 0.7f, 1f), // Purple
+                        ProgressColor = new Color(0.85f, 0.4f, 0.4f, 1f) // Dark red
+                    };
+
+                case "Medieval":
+                    return new UITheme
+                    {
+                        Name = "Medieval",
+                        BackgroundColor = new Color(0.23f, 0.2f, 0.18f, 0.95f), // Stone #3a342f
+                        HeaderColor = new Color(0.83f, 0.69f, 0.22f, 1f), // Gold #d4af37
+                        QuestTitleColor = new Color(0.9f, 0.85f, 0.7f, 1f), // Beige
+                        ObjectiveColor = new Color(0.85f, 0.8f, 0.7f, 1f), // Light brown
+                        ZoneColor = new Color(0.7f, 0.6f, 0.4f, 1f), // Brown
+                        ProgressColor = new Color(0.83f, 0.69f, 0.22f, 1f) // Gold
+                    };
+
+                case "Forest":
+                    return new UITheme
+                    {
+                        Name = "Forest",
+                        BackgroundColor = new Color(0.06f, 0.18f, 0.11f, 0.95f), // Dark green #0f2e1c
+                        HeaderColor = new Color(0.57f, 0.93f, 0.57f, 1f), // Light green #90EE90
+                        QuestTitleColor = new Color(0.8f, 1f, 0.6f, 1f), // Yellow-green
+                        ObjectiveColor = new Color(0.85f, 0.95f, 0.85f, 1f), // Very light green
+                        ZoneColor = new Color(0.5f, 0.8f, 0.5f, 1f), // Medium green
+                        ProgressColor = new Color(1f, 0.84f, 0f, 1f) // Gold
+                    };
+
+                case "Royal":
+                    return new UITheme
+                    {
+                        Name = "Royal",
+                        BackgroundColor = new Color(0.04f, 0.12f, 0.27f, 0.95f), // Dark blue #0a1f44
+                        HeaderColor = new Color(0.53f, 0.81f, 0.92f, 1f), // Light blue #87CEEB
+                        QuestTitleColor = new Color(0.9f, 0.9f, 1f, 1f), // Very light blue
+                        ObjectiveColor = new Color(1f, 1f, 1f, 1f), // White
+                        ZoneColor = new Color(0.6f, 0.75f, 0.95f, 1f), // Sky blue
+                        ProgressColor = new Color(0.53f, 0.81f, 0.92f, 1f) // Light blue
+                    };
+
+                default: // Dark (WoW style)
+                    return new UITheme
+                    {
+                        Name = "Dark",
+                        BackgroundColor = new Color(0.05f, 0.05f, 0.05f, 0.95f), // Very dark
+                        HeaderColor = new Color(1f, 0.84f, 0f, 1f), // Gold #FFD700
+                        QuestTitleColor = new Color(1f, 0.9f, 0.3f, 1f), // Yellow-gold
+                        ObjectiveColor = new Color(1f, 1f, 1f, 1f), // White
+                        ZoneColor = new Color(0.7f, 0.7f, 1f, 1f), // Light blue
+                        ProgressColor = new Color(0.5f, 1f, 0.5f, 1f) // Light green
+                    };
+            }
+        }
+
+        public static string[] GetThemeNames()
+        {
+            return new string[] { "Transparent", "Dark", "Gothic", "Medieval", "Forest", "Royal" };
+        }
+    }
+
+    /// <summary>
+    /// Quest tracker UI overlay (like WoW quest tracker on right side of screen)
+    /// </summary>
+    public class QuestTracker : MonoBehaviour
+    {
+        public QuestGuruPlugin Plugin { get; set; }
+
+        private Vector2 scrollPosition = Vector2.zero;
+        private Vector2 questListScrollPosition = Vector2.zero;
+
+        private bool showQuestList = false;
+        private bool showSettings = false;
+        private List<QuestData> cachedActiveQuests = new List<QuestData>();
+        private float lastQuestRefresh = 0f;
+        private float lastQuestListToggle = -1f;
+        private const float questListToggleCooldown = 0.3f; // Prevent accidental double-toggle
+        private float questRefreshInterval = 2f; // Refresh every 2 seconds for faster quest updates (more frequent to catch character changes)
+        private string lastCharacterName = "";
+        private int lastQuestCount = -1;
+
+        // Window positioning support
+        private Rect trackerWindowRect;
+        private Rect questListWindowRect;
+        private Rect settingsWindowRect;
+        private const float moveStep = 10f; // How many pixels to move per button click
+
+        // Settings window scroll
+        private Vector2 settingsScrollPosition = Vector2.zero;
+
+        // Settings window temp values (for sliders)
+        private float tempUIScale;
+        private float tempBaseFontSize;
+        private float tempTrackerWidth;
+        private float tempTrackerHeight;
+        private float tempQuestListWidth;
+        private float tempQuestListHeight;
+        private int tempThemeIndex; // Index in theme array
+
+        // Current theme
+        private UITheme currentTheme;
+
+        private GUIStyle windowStyle;
+        private GUIStyle headerStyle;
+        private GUIStyle questTitleStyle;
+        private GUIStyle objectiveStyle;
+        private GUIStyle zoneStyle;
+        private GUIStyle progressStyle;
+        private GUIStyle buttonStyle;
+        private GUIStyle selectedButtonStyle;
+
+        // UI Scaling
+        private float currentUIScale = 1.0f;
+        private int currentBaseFontSize = 12;
+
+        private void InitializeStyles()
+        {
+            // Get current scaling settings from plugin
+            currentUIScale = Plugin.GetUIScale();
+            currentBaseFontSize = Plugin.GetBaseFontSize();
+
+            // Get current theme
+            currentTheme = UITheme.GetTheme(Plugin.GetUITheme());
+
+            // Calculate scaled padding and sizes
+            int scaledPadding = Mathf.RoundToInt(12 * currentUIScale);
+            int smallPadding = Mathf.RoundToInt(10 * currentUIScale);
+
+            // Window style - use theme background color
+            windowStyle = new GUIStyle(GUI.skin.box);
+            windowStyle.normal.background = MakeTexture(2, 2, currentTheme.BackgroundColor);
+            windowStyle.border = new RectOffset(2, 2, 2, 2);
+            windowStyle.padding = new RectOffset(scaledPadding, scaledPadding, scaledPadding, scaledPadding);
+
+            // Header style - use theme header color
+            headerStyle = new GUIStyle(GUI.skin.label);
+            headerStyle.fontSize = Mathf.RoundToInt((currentBaseFontSize + 4) * currentUIScale);
+            headerStyle.fontStyle = FontStyle.Bold;
+            headerStyle.normal.textColor = currentTheme.HeaderColor;
+            headerStyle.alignment = TextAnchor.MiddleCenter;
+
+            // Quest title style - use theme quest title color
+            questTitleStyle = new GUIStyle(GUI.skin.label);
+            questTitleStyle.fontSize = Mathf.RoundToInt((currentBaseFontSize + 2) * currentUIScale);
+            questTitleStyle.fontStyle = FontStyle.Bold;
+            questTitleStyle.normal.textColor = currentTheme.QuestTitleColor;
+            questTitleStyle.wordWrap = true;
+
+            // Objective style - use theme objective color
+            objectiveStyle = new GUIStyle(GUI.skin.label);
+            objectiveStyle.fontSize = Mathf.RoundToInt(currentBaseFontSize * currentUIScale);
+            objectiveStyle.normal.textColor = currentTheme.ObjectiveColor;
+            objectiveStyle.wordWrap = true;
+            objectiveStyle.padding = new RectOffset(smallPadding, Mathf.RoundToInt(5 * currentUIScale), Mathf.RoundToInt(2 * currentUIScale), Mathf.RoundToInt(2 * currentUIScale));
+
+            // Zone style - use theme zone color
+            zoneStyle = new GUIStyle(GUI.skin.label);
+            zoneStyle.fontSize = Mathf.RoundToInt((currentBaseFontSize - 1) * currentUIScale);
+            zoneStyle.fontStyle = FontStyle.Italic;
+            zoneStyle.normal.textColor = currentTheme.ZoneColor;
+
+            // Progress style - use theme progress color
+            progressStyle = new GUIStyle(GUI.skin.label);
+            progressStyle.fontSize = Mathf.RoundToInt((currentBaseFontSize - 1) * currentUIScale);
+            progressStyle.normal.textColor = currentTheme.ProgressColor;
+
+            // Button style
+            buttonStyle = new GUIStyle(GUI.skin.button);
+            buttonStyle.fontSize = Mathf.RoundToInt(currentBaseFontSize * currentUIScale);
+            buttonStyle.normal.textColor = Color.white;
+            buttonStyle.normal.background = MakeTexture(2, 2, new Color(0.3f, 0.3f, 0.3f, 0.8f));
+            buttonStyle.hover.background = MakeTexture(2, 2, new Color(0.4f, 0.4f, 0.4f, 0.9f));
+            buttonStyle.padding = new RectOffset(smallPadding, smallPadding, Mathf.RoundToInt(5 * currentUIScale), Mathf.RoundToInt(5 * currentUIScale));
+
+            // Selected button style
+            selectedButtonStyle = new GUIStyle(buttonStyle);
+            selectedButtonStyle.normal.background = MakeTexture(2, 2, new Color(0.2f, 0.5f, 0.8f, 0.9f));
+            selectedButtonStyle.normal.textColor = Color.yellow;
+        }
+
+        private void Start()
+        {
+            // Initialize window rectangles from config
+            Vector2 trackerPos = Plugin.GetTrackerPosition();
+            Vector2 questListPos = Plugin.GetQuestListPosition();
+
+            // Get window sizes from config
+            float trackerWidth = Plugin.GetTrackerWidth();
+            float trackerHeight = Plugin.GetTrackerHeight();
+            float questListWidth = Plugin.GetQuestListWidth();
+            float questListHeight = Plugin.GetQuestListHeight();
+
+            trackerWindowRect = new Rect(trackerPos.x, trackerPos.y, trackerWidth, trackerHeight);
+            questListWindowRect = new Rect(questListPos.x, questListPos.y, questListWidth, questListHeight);
+
+            // Settings window centered on screen - VERY large to fit ALL content without scrolling
+            float settingsWidth = 620f;
+            float settingsHeight = Mathf.Min(Screen.height - 50, 900f); // Max 900px or screen height - 50px
+            settingsWindowRect = new Rect(Screen.width / 2 - settingsWidth/2, Screen.height / 2 - settingsHeight/2, settingsWidth, settingsHeight);
+
+            // Initialize temp settings values
+            UpdateTempSettings();
+
+            // IMPORTANT: Do initial quest refresh on startup so quests show immediately
+            RefreshQuestCache();
+            lastQuestRefresh = Time.time;
+        }
+
+        private void UpdateTempSettings()
+        {
+            tempUIScale = Plugin.GetUIScale();
+            tempBaseFontSize = Plugin.GetBaseFontSize();
+            tempTrackerWidth = Plugin.GetTrackerWidth();
+            tempTrackerHeight = Plugin.GetTrackerHeight();
+            tempQuestListWidth = Plugin.GetQuestListWidth();
+            tempQuestListHeight = Plugin.GetQuestListHeight();
+
+            // Find current theme index
+            string currentThemeName = Plugin.GetUITheme();
+            string[] themeNames = UITheme.GetThemeNames();
+            tempThemeIndex = System.Array.IndexOf(themeNames, currentThemeName);
+            if (tempThemeIndex < 0) tempThemeIndex = 1; // Default to Dark
+        }
+
+        private void Update()
+        {
+            // Toggle quest list with Q key (with debounce to prevent accidental double-toggle)
+            if (Input.GetKeyDown(KeyCode.L))
+            {
+                // Only toggle if enough time has passed since last toggle
+                if (Time.time - lastQuestListToggle > questListToggleCooldown)
+                {
+                    showQuestList = !showQuestList;
+                    lastQuestListToggle = Time.time;
+                    QuestGuruPlugin.Logger.LogInfo($"Quest List: {(showQuestList ? "Shown" : "Hidden")}");
+                }
+            }
+
+            // Toggle settings with O key (or configured key)
+            if (Input.GetKeyDown(Plugin.GetSettingsKey()))
+            {
+                showSettings = !showSettings;
+                if (showSettings)
+                {
+                    UpdateTempSettings(); // Reload current values
+                }
+                QuestGuruPlugin.Logger.LogInfo($"Settings: {(showSettings ? "Shown" : "Hidden")}");
+            }
+
+            // R key - manual refresh quests
+            if (Input.GetKeyDown(KeyCode.R))
+            {
+                RefreshQuestCache();
+                QuestGuruPlugin.Logger.LogInfo("Quest list manually refreshed");
+            }
+
+            // Refresh quest cache periodically AND when character changes
+            bool shouldRefresh = Time.time - lastQuestRefresh > questRefreshInterval;
+
+            // Also check if character changed or quest count changed (quest accepted/completed)
+            if (!shouldRefresh)
+            {
+                string currentCharName = GetCurrentCharacterName();
+                if (!string.IsNullOrEmpty(currentCharName) && currentCharName != lastCharacterName)
+                {
+                    QuestGuruPlugin.Logger.LogInfo($"Character changed from '{lastCharacterName}' to '{currentCharName}' - refreshing quests");
+                    shouldRefresh = true;
+                    lastCharacterName = currentCharName;
+
+                    // Also re-initialize quest bridge instances
+                    GameQuestBridge.RefreshQuestManager();
+                }
+            }
+
+            if (shouldRefresh)
+            {
+                RefreshQuestCache();
+                lastQuestRefresh = Time.time;
+            }
+        }
+
+        private string GetCurrentCharacterName()
+        {
+            try
+            {
+                // Try to find player GameObject
+                GameObject player = GameObject.FindGameObjectWithTag("Player");
+                if (player == null)
+                {
+                    player = GameObject.Find("Player");
+                }
+
+                if (player != null)
+                {
+                    // Try to get character name from player component
+                    var components = player.GetComponents<MonoBehaviour>();
+                    foreach (var component in components)
+                    {
+                        // Try to find a name field/property
+                        var nameField = component.GetType().GetField("CharacterName",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                        if (nameField != null)
+                        {
+                            var name = nameField.GetValue(component);
+                            if (name != null) return name.ToString();
+                        }
+
+                        var nameProp = component.GetType().GetProperty("CharacterName",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                        if (nameProp != null && nameProp.CanRead)
+                        {
+                            var name = nameProp.GetValue(component);
+                            if (name != null) return name.ToString();
+                        }
+                    }
+
+                    // Fallback to player GameObject name
+                    return player.name;
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogWarning($"Error getting character name: {ex.Message}");
+            }
+
+            return "";
+        }
+
+        private void RefreshQuestCache()
+        {
+            try
+            {
+                var newQuests = GameQuestBridge.GetActiveQuests();
+
+                // Check if quest count changed (quest accepted or completed)
+                if (newQuests.Count != lastQuestCount && lastQuestCount != -1)
+                {
+                    QuestGuruPlugin.Logger.LogInfo($"Quest count changed from {lastQuestCount} to {newQuests.Count}");
+
+                    // If currently tracked quest is no longer in the list, untrack it
+                    if (Plugin.GetTrackedQuest() != null)
+                    {
+                        var trackedQuest = Plugin.GetTrackedQuest();
+                        bool stillExists = newQuests.Any(q => q.QuestID == trackedQuest.QuestID);
+                        if (!stillExists)
+                        {
+                            QuestGuruPlugin.Logger.LogInfo($"Tracked quest '{trackedQuest.Name}' no longer active - untracking");
+                            Plugin.UntrackQuest();
+                        }
+                    }
+                }
+
+                lastQuestCount = newQuests.Count;
+                cachedActiveQuests = newQuests;
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogError($"Error refreshing quest cache: {ex.Message}");
+            }
+        }
+
+        private void OnGUI()
+        {
+            if (!Plugin.IsTrackerVisible())
+                return;
+
+            InitializeStyles();
+
+            // Draw main tracker window (draggable)
+            trackerWindowRect = GUI.Window(1, trackerWindowRect, DrawTrackerWindow, "", windowStyle);
+
+            // Draw quest list window (draggable)
+            if (showQuestList)
+            {
+                questListWindowRect = GUI.Window(2, questListWindowRect, DrawQuestListWindow, "", windowStyle);
+            }
+
+            // Draw settings window
+            if (showSettings)
+            {
+                settingsWindowRect = GUI.Window(3, settingsWindowRect, DrawSettingsWindow, "", windowStyle);
+            }
+        }
+
+        private void DrawMoveButtons(ref Rect windowRect)
+        {
+            GUIStyle arrowButtonStyle = new GUIStyle(GUI.skin.button);
+            arrowButtonStyle.fontSize = Mathf.RoundToInt(10 * currentUIScale);
+            arrowButtonStyle.padding = new RectOffset(Mathf.RoundToInt(2 * currentUIScale), Mathf.RoundToInt(2 * currentUIScale), Mathf.RoundToInt(2 * currentUIScale), Mathf.RoundToInt(2 * currentUIScale));
+
+            float buttonWidth = 30 * currentUIScale;
+            float buttonHeight = 20 * currentUIScale;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Move:", objectiveStyle);
+
+            // Up button
+            if (GUILayout.Button("▲", arrowButtonStyle, GUILayout.Width(buttonWidth), GUILayout.Height(buttonHeight)))
+            {
+                windowRect.y -= moveStep;
+                windowRect.y = Mathf.Clamp(windowRect.y, 0, Screen.height - windowRect.height);
+            }
+
+            // Down button
+            if (GUILayout.Button("▼", arrowButtonStyle, GUILayout.Width(buttonWidth), GUILayout.Height(buttonHeight)))
+            {
+                windowRect.y += moveStep;
+                windowRect.y = Mathf.Clamp(windowRect.y, 0, Screen.height - windowRect.height);
+            }
+
+            // Left button
+            if (GUILayout.Button("◄", arrowButtonStyle, GUILayout.Width(buttonWidth), GUILayout.Height(buttonHeight)))
+            {
+                windowRect.x -= moveStep;
+                windowRect.x = Mathf.Clamp(windowRect.x, 0, Screen.width - windowRect.width);
+            }
+
+            // Right button
+            if (GUILayout.Button("►", arrowButtonStyle, GUILayout.Width(buttonWidth), GUILayout.Height(buttonHeight)))
+            {
+                windowRect.x += moveStep;
+                windowRect.x = Mathf.Clamp(windowRect.x, 0, Screen.width - windowRect.width);
+            }
+
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawTrackerWindow(int windowID)
+        {
+            GUILayout.BeginVertical();
+
+            // Header
+            GUILayout.BeginHorizontal(GUI.skin.box);
+            GUILayout.Label("Quest Tracker", headerStyle);
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(5);
+
+            // Move buttons
+            DrawMoveButtons(ref trackerWindowRect);
+
+            GUILayout.Space(5);
+
+            // Button to toggle quest list
+            float buttonHeight = 25 * currentUIScale;
+            if (GUILayout.Button($"{(showQuestList ? "Hide" : "Show")} Quest List (L)", buttonStyle, GUILayout.Height(buttonHeight)))
+            {
+                showQuestList = !showQuestList;
+            }
+
+            GUILayout.Space(10);
+
+            // Get tracked quest
+            QuestData trackedQuest = Plugin.GetTrackedQuest();
+
+            if (trackedQuest == null)
+            {
+                GUILayout.Label("No quest tracked", objectiveStyle);
+                GUILayout.Space(3);
+                GUILayout.Label("Press L to open quest list", zoneStyle);
+                GUILayout.Space(10);
+                GUILayout.Label("Controls:", zoneStyle);
+                GUILayout.Label("  L - Toggle quest list", objectiveStyle);
+                GUILayout.Label("  R - Refresh quests", objectiveStyle);
+                GUILayout.Label("  T - Toggle tracker", objectiveStyle);
+            }
+            else
+            {
+                DrawTrackedQuest(trackedQuest);
+            }
+
+            GUILayout.EndVertical();
+        }
+
+        private void DrawQuestListWindow(int windowID)
+        {
+            GUILayout.BeginVertical();
+
+            // Header
+            GUILayout.BeginHorizontal(GUI.skin.box);
+            GUILayout.Label($"Active Quests ({cachedActiveQuests.Count})", headerStyle);
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(5);
+
+            // Move buttons
+            DrawMoveButtons(ref questListWindowRect);
+
+            GUILayout.Space(5);
+
+            // Refresh button
+            float buttonHeight = 25 * currentUIScale;
+            if (GUILayout.Button("Refresh Quest List (R)", buttonStyle, GUILayout.Height(buttonHeight)))
+            {
+                RefreshQuestCache();
+            }
+
+            GUILayout.Space(5);
+
+            // Scroll view with all quests
+            questListScrollPosition = GUILayout.BeginScrollView(questListScrollPosition);
+
+            if (cachedActiveQuests.Count == 0)
+            {
+                GUILayout.Label("No active quests found", objectiveStyle);
+                GUILayout.Space(5);
+                GUILayout.Label("Try pressing INSERT for debug info", objectiveStyle);
+            }
+            else
+            {
+                QuestData currentlyTracked = Plugin.GetTrackedQuest();
+
+                foreach (var quest in cachedActiveQuests)
+                {
+                    bool isTracked = currentlyTracked != null && currentlyTracked.QuestID == quest.QuestID;
+                    GUIStyle questButtonStyle = isTracked ? selectedButtonStyle : buttonStyle;
+
+                    GUILayout.BeginVertical(GUI.skin.box);
+
+                    // Quest title button
+                    string questTitle = $"[{quest.Level}] {quest.Name}";
+                    float questButtonHeight = 30 * currentUIScale;
+                    if (GUILayout.Button(questTitle, questButtonStyle, GUILayout.Height(questButtonHeight)))
+                    {
+                        // Track this quest
+                        Plugin.TrackQuest(quest);
+                        QuestGuruPlugin.Logger.LogInfo($"Tracking quest: {quest.Name}");
+                    }
+
+                    // Show brief info
+                    if (quest.CurrentObjective != null)
+                    {
+                        GUILayout.Label($"  {quest.CurrentObjective.Description}", objectiveStyle);
+
+                        if (quest.CurrentObjective.Type == QuestObjectiveType.Collect ||
+                            quest.CurrentObjective.Type == QuestObjectiveType.Kill)
+                        {
+                            GUILayout.Label($"  Progress: {quest.CurrentObjective.GetProgressText()}", progressStyle);
+                        }
+                    }
+
+                    GUILayout.Label($"  Zone: {quest.GetCurrentZone()}", zoneStyle);
+
+                    GUILayout.Space(5);
+                    GUILayout.EndVertical();
+                    GUILayout.Space(5);
+                }
+            }
+
+            GUILayout.EndScrollView();
+
+            GUILayout.EndVertical();
+        }
+
+        private void DrawTrackedQuest(QuestData quest)
+        {
+            // Quest title with level
+            GUILayout.Label($"[{quest.Level}] {quest.Name}", questTitleStyle);
+            GUILayout.Space(5);
+
+            // Wiki data if available
+            var wikiInfo = QuestWikiData.GetQuestInfo(quest.Name);
+            if (wikiInfo != null)
+            {
+                // NPC and Location from wiki
+                if (!string.IsNullOrEmpty(wikiInfo.GiverNPC))
+                {
+                    GUILayout.Label($"NPC: {wikiInfo.GiverNPC}", zoneStyle);
+                }
+                if (!string.IsNullOrEmpty(wikiInfo.GiverLocation))
+                {
+                    GUILayout.Label($"Location: {wikiInfo.GiverLocation}", zoneStyle);
+                }
+                GUILayout.Space(5);
+
+                // Wiki instructions
+                if (!string.IsNullOrEmpty(wikiInfo.Instructions))
+                {
+                    GUILayout.Label("How to complete:", questTitleStyle);
+
+                    // Parse and highlight item drop information
+                    string mainInstructions;
+                    string itemSources;
+                    ParseItemSources(wikiInfo.Instructions, out mainInstructions, out itemSources);
+
+                    GUILayout.Label(mainInstructions, objectiveStyle);
+
+                    // Show item sources separately if found
+                    if (!string.IsNullOrEmpty(itemSources))
+                    {
+                        GUILayout.Space(3);
+                        GUILayout.Label("Item Sources:", questTitleStyle);
+                        GUILayout.Label(itemSources, progressStyle);
+                    }
+
+                    GUILayout.Space(5);
+                }
+            }
+            else
+            {
+                // Fallback to game description
+                if (!string.IsNullOrEmpty(quest.Description))
+                {
+                    GUILayout.Label(quest.Description, objectiveStyle);
+                    GUILayout.Space(5);
+                }
+            }
+
+            GUILayout.Space(5);
+
+            // Current objective
+            if (quest.CurrentObjective != null)
+            {
+                DrawObjective(quest.CurrentObjective);
+            }
+
+            // Show all objectives if there are multiple
+            if (quest.AllObjectives != null && quest.AllObjectives.Count > 1)
+            {
+                GUILayout.Space(5);
+                GUILayout.Label("All Objectives:", zoneStyle);
+                foreach (var obj in quest.AllObjectives)
+                {
+                    string checkmark = obj.IsCompleted ? "✓" : "○";
+                    string progressText = "";
+
+                    if (obj.Type == QuestObjectiveType.Collect || obj.Type == QuestObjectiveType.Kill)
+                    {
+                        progressText = $" ({obj.CurrentAmount}/{obj.RequiredAmount})";
+                    }
+
+                    GUILayout.Label($"  {checkmark} {obj.Description}{progressText}", objectiveStyle);
+                }
+            }
+
+            GUILayout.Space(10);
+
+            // Button to stop tracking
+            float stopButtonHeight = 30 * currentUIScale;
+            if (GUILayout.Button("Stop Tracking", buttonStyle, GUILayout.Height(stopButtonHeight)))
+            {
+                Plugin.UntrackQuest();
+            }
+        }
+
+        private void DrawObjective(QuestObjective objective)
+        {
+            string icon = GetObjectiveIcon(objective.Type);
+
+            // Create detailed instruction based on objective type
+            string instruction = "";
+
+            switch (objective.Type)
+            {
+                case QuestObjectiveType.Collect:
+                    if (!string.IsNullOrEmpty(objective.RequiredItem))
+                    {
+                        instruction = $"{icon} Collect: {objective.RequiredItem}";
+                        if (objective.RequiredAmount > 0)
+                        {
+                            instruction += $" ({objective.CurrentAmount}/{objective.RequiredAmount})";
+                        }
+                    }
+                    else
+                    {
+                        instruction = $"{icon} {objective.Description}";
+                    }
+                    break;
+
+                case QuestObjectiveType.TalkTo:
+                    if (!string.IsNullOrEmpty(objective.TargetNPCName))
+                    {
+                        instruction = $"{icon} Talk to: {objective.TargetNPCName}";
+                    }
+                    else
+                    {
+                        instruction = $"{icon} {objective.Description}";
+                    }
+                    break;
+
+                case QuestObjectiveType.TurnIn:
+                    instruction = $"{icon} Turn in quest (Return to quest giver)";
+                    break;
+
+                case QuestObjectiveType.Kill:
+                    instruction = $"{icon} {objective.Description}";
+                    if (objective.RequiredAmount > 0)
+                    {
+                        instruction += $" ({objective.CurrentAmount}/{objective.RequiredAmount})";
+                    }
+                    break;
+
+                default:
+                    instruction = $"{icon} {objective.Description}";
+                    break;
+            }
+
+            GUILayout.Label(instruction, objectiveStyle);
+
+            // Additional info box
+            if (objective.Type == QuestObjectiveType.Collect)
+            {
+                GUILayout.Label($"   → Check your inventory or gather from world", zoneStyle);
+            }
+            else if (objective.Type == QuestObjectiveType.TurnIn)
+            {
+                GUILayout.Label($"   → Return to the NPC who gave you this quest", zoneStyle);
+            }
+        }
+
+        private string GetObjectiveIcon(QuestObjectiveType type)
+        {
+            switch (type)
+            {
+                case QuestObjectiveType.TalkTo:
+                    return "[Talk]";
+                case QuestObjectiveType.Kill:
+                    return "[Kill]";
+                case QuestObjectiveType.Collect:
+                    return "[Collect]";
+                case QuestObjectiveType.GoTo:
+                    return "[Go To]";
+                case QuestObjectiveType.TurnIn:
+                    return "[Turn In]";
+                case QuestObjectiveType.Interact:
+                    return "[Use]";
+                case QuestObjectiveType.Explore:
+                    return "[Explore]";
+                default:
+                    return "•";
+            }
+        }
+
+        private float GetDistanceToObjective(QuestData quest)
+        {
+            try
+            {
+                GameObject player = GameObject.FindGameObjectWithTag("Player");
+                if (player == null)
+                    player = GameObject.Find("Player");
+
+                if (player != null && quest.CurrentObjective != null)
+                {
+                    Vector3 playerPos = player.transform.position;
+                    Vector3 targetPos = quest.CurrentObjective.TargetPosition;
+                    return Vector3.Distance(playerPos, targetPos);
+                }
+            }
+            catch (Exception ex)
+            {
+                QuestGuruPlugin.Logger.LogWarning($"Error calculating distance: {ex.Message}");
+            }
+
+            return -1f;
+        }
+
+        private Texture2D MakeTexture(int width, int height, Color color)
+        {
+            Color[] pixels = new Color[width * height];
+            for (int i = 0; i < pixels.Length; i++)
+                pixels[i] = color;
+
+            Texture2D texture = new Texture2D(width, height);
+            texture.SetPixels(pixels);
+            texture.Apply();
+            return texture;
+        }
+
+        /// <summary>
+        /// Parses item drop/source information from instructions text
+        /// </summary>
+        private void ParseItemSources(string instructions, out string mainInstructions, out string itemSources)
+        {
+            mainInstructions = instructions;
+            itemSources = "";
+
+            if (string.IsNullOrEmpty(instructions))
+                return;
+
+            // Common patterns for item sources
+            string[] patterns = new string[]
+            {
+                "can be obtained from",
+                "is dropped from",
+                "dropped from",
+                "drops from",
+                "found on",
+                "is a rare drop from",
+                "dropped by"
+            };
+
+            string mainText = instructions;
+            string itemSourcesText = "";
+
+            foreach (var pattern in patterns)
+            {
+                int index = instructions.IndexOf(pattern, StringComparison.OrdinalIgnoreCase);
+                if (index >= 0)
+                {
+                    // Extract the sentence containing the drop info
+                    int sentenceStart = instructions.LastIndexOf('.', index) + 1;
+                    int sentenceEnd = instructions.IndexOf('.', index);
+                    if (sentenceEnd == -1) sentenceEnd = instructions.Length;
+
+                    string dropSentence = instructions.Substring(sentenceStart, sentenceEnd - sentenceStart).Trim();
+
+                    // Remove this sentence from main text
+                    mainText = instructions.Substring(0, sentenceStart).Trim() + " " +
+                              (sentenceEnd < instructions.Length ? instructions.Substring(sentenceEnd + 1).Trim() : "");
+
+                    // Add to item sources
+                    if (!string.IsNullOrEmpty(itemSourcesText))
+                        itemSourcesText += "\n";
+                    itemSourcesText += "• " + dropSentence;
+                }
+            }
+
+            mainInstructions = mainText.Trim();
+            itemSources = itemSourcesText.Trim();
+        }
+
+        private void DrawSettingsWindow(int windowID)
+        {
+            // Use fixed styles for settings window (ignore UI scale to avoid issues)
+            GUIStyle settingsHeaderStyle = new GUIStyle(GUI.skin.label);
+            settingsHeaderStyle.fontSize = 16;
+            settingsHeaderStyle.fontStyle = FontStyle.Bold;
+            settingsHeaderStyle.normal.textColor = new Color(1f, 0.84f, 0f);
+            settingsHeaderStyle.alignment = TextAnchor.MiddleCenter;
+
+            GUIStyle settingsTitleStyle = new GUIStyle(GUI.skin.label);
+            settingsTitleStyle.fontSize = 14;
+            settingsTitleStyle.fontStyle = FontStyle.Bold;
+            settingsTitleStyle.normal.textColor = new Color(1f, 0.9f, 0.3f);
+
+            GUIStyle settingsLabelStyle = new GUIStyle(GUI.skin.label);
+            settingsLabelStyle.fontSize = 12;
+            settingsLabelStyle.normal.textColor = Color.white;
+
+            GUIStyle settingsSmallStyle = new GUIStyle(GUI.skin.label);
+            settingsSmallStyle.fontSize = 10;
+            settingsSmallStyle.normal.textColor = new Color(0.7f, 0.7f, 1f);
+
+            GUIStyle settingsButtonStyle = new GUIStyle(GUI.skin.button);
+            settingsButtonStyle.fontSize = 12;
+            settingsButtonStyle.normal.textColor = Color.white;
+
+            GUILayout.BeginVertical();
+
+            // Header
+            GUILayout.BeginHorizontal(GUI.skin.box);
+            GUILayout.Label("Quest Guru Settings", settingsHeaderStyle);
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(5);
+
+            // === UI THEME ===
+            string[] themeNames = UITheme.GetThemeNames();
+            GUILayout.Label("UI Theme", settingsTitleStyle);
+            GUILayout.BeginHorizontal();
+
+            // Previous theme button
+            if (GUILayout.Button("<", settingsButtonStyle, GUILayout.Width(40)))
+            {
+                tempThemeIndex--;
+                if (tempThemeIndex < 0) tempThemeIndex = themeNames.Length - 1;
+            }
+
+            // Display current theme name
+            GUILayout.Label(themeNames[tempThemeIndex], settingsLabelStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Label("", GUILayout.ExpandWidth(true)); // Center text
+
+            // Next theme button
+            if (GUILayout.Button(">", settingsButtonStyle, GUILayout.Width(40)))
+            {
+                tempThemeIndex++;
+                if (tempThemeIndex >= themeNames.Length) tempThemeIndex = 0;
+            }
+
+            GUILayout.EndHorizontal();
+
+            // Theme description
+            string themeDesc = GetThemeDescription(themeNames[tempThemeIndex]);
+            GUILayout.Label(themeDesc, settingsSmallStyle);
+
+            GUILayout.Space(15);
+
+            // === UI SCALE ===
+            GUILayout.Label($"UI Scale: {tempUIScale:F2}x", settingsTitleStyle);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("0.5", settingsSmallStyle, GUILayout.Width(30));
+            tempUIScale = GUILayout.HorizontalSlider(tempUIScale, 0.5f, 1.5f);
+            GUILayout.Label("1.5", settingsSmallStyle, GUILayout.Width(30));
+            GUILayout.EndHorizontal();
+            GUILayout.Label("Smaller = more compact UI, Larger = bigger UI", settingsLabelStyle);
+            GUILayout.Space(5);
+
+            // Preset buttons for UI scale
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Compact (0.7x)", settingsButtonStyle))
+                tempUIScale = 0.7f;
+            if (GUILayout.Button("Normal (1.0x)", settingsButtonStyle))
+                tempUIScale = 1.0f;
+            if (GUILayout.Button("Large (1.3x)", settingsButtonStyle))
+                tempUIScale = 1.3f;
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(15);
+
+            // === FONT SIZE ===
+            GUILayout.Label($"Font Size: {(int)tempBaseFontSize}", settingsTitleStyle);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("8", settingsSmallStyle, GUILayout.Width(30));
+            tempBaseFontSize = GUILayout.HorizontalSlider(tempBaseFontSize, 8f, 20f);
+            GUILayout.Label("20", settingsSmallStyle, GUILayout.Width(30));
+            GUILayout.EndHorizontal();
+            GUILayout.Label("Smaller = compact text, Larger = easier to read", settingsLabelStyle);
+            GUILayout.Space(5);
+
+            // Preset buttons for font size
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Small (10)", settingsButtonStyle))
+                tempBaseFontSize = 10f;
+            if (GUILayout.Button("Normal (12)", settingsButtonStyle))
+                tempBaseFontSize = 12f;
+            if (GUILayout.Button("Large (14)", settingsButtonStyle))
+                tempBaseFontSize = 14f;
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(15);
+
+            // === TRACKER WINDOW SIZE ===
+            GUILayout.Label("Quest Tracker Window Size", settingsTitleStyle);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label($"Width: {(int)tempTrackerWidth}px", settingsLabelStyle);
+            tempTrackerWidth = GUILayout.HorizontalSlider(tempTrackerWidth, 200f, 800f);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            GUILayout.Label($"Height: {(int)tempTrackerHeight}px", settingsLabelStyle);
+            tempTrackerHeight = GUILayout.HorizontalSlider(tempTrackerHeight, 200f, 1000f);
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(10);
+
+            // === QUEST LIST WINDOW SIZE ===
+            GUILayout.Label("Quest List Window Size", settingsTitleStyle);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label($"Width: {(int)tempQuestListWidth}px", settingsLabelStyle);
+            tempQuestListWidth = GUILayout.HorizontalSlider(tempQuestListWidth, 250f, 800f);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            GUILayout.Label($"Height: {(int)tempQuestListHeight}px", settingsLabelStyle);
+            tempQuestListHeight = GUILayout.HorizontalSlider(tempQuestListHeight, 300f, 1200f);
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(15);
+
+            // === ACTION BUTTONS ===
+            GUILayout.BeginHorizontal();
+
+            // Apply button
+            if (GUILayout.Button("Apply Settings", settingsButtonStyle, GUILayout.Height(35)))
+            {
+                ApplySettings();
+            }
+
+            // Reset to defaults button
+            if (GUILayout.Button("Reset Defaults", settingsButtonStyle, GUILayout.Height(35)))
+            {
+                ResetToDefaults();
+            }
+
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(5);
+
+            // Close button - larger and always visible
+            if (GUILayout.Button("Close Settings (O)", settingsButtonStyle, GUILayout.Height(40)))
+            {
+                showSettings = false;
+            }
+
+            GUILayout.Space(5);
+
+            GUILayout.EndVertical();
+        }
+
+        private void ApplySettings()
+        {
+            // Apply all settings
+            Plugin.SetUIScale(tempUIScale);
+            Plugin.SetBaseFontSize((int)tempBaseFontSize);
+            Plugin.SetTrackerWidth(tempTrackerWidth);
+            Plugin.SetTrackerHeight(tempTrackerHeight);
+            Plugin.SetQuestListWidth(tempQuestListWidth);
+            Plugin.SetQuestListHeight(tempQuestListHeight);
+
+            // Apply theme
+            string[] themeNames = UITheme.GetThemeNames();
+            Plugin.SetUITheme(themeNames[tempThemeIndex]);
+
+            // Update window sizes immediately
+            trackerWindowRect.width = tempTrackerWidth;
+            trackerWindowRect.height = tempTrackerHeight;
+            questListWindowRect.width = tempQuestListWidth;
+            questListWindowRect.height = tempQuestListHeight;
+
+            QuestGuruPlugin.Logger.LogInfo($"Settings applied! Theme: {themeNames[tempThemeIndex]}");
+        }
+
+        private string GetThemeDescription(string themeName)
+        {
+            switch (themeName)
+            {
+                case "Transparent":
+                    return "Minimal transparent UI with light blue text";
+                case "Dark":
+                    return "WoW-style dark UI with gold accents (default)";
+                case "Gothic":
+                    return "Dark purple theme with silver and red text";
+                case "Medieval":
+                    return "Stone background with beige and gold colors";
+                case "Forest":
+                    return "Dark green nature theme with light green text";
+                case "Royal":
+                    return "Deep blue magic theme with sky blue accents";
+                default:
+                    return "";
+            }
+        }
+
+        private void ResetToDefaults()
+        {
+            tempUIScale = 1.0f;
+            tempBaseFontSize = 12f;
+            tempTrackerWidth = 310f;
+            tempTrackerHeight = 400f;
+            tempQuestListWidth = 360f;
+            tempQuestListHeight = 600f;
+            tempThemeIndex = 1; // Dark theme
+
+            ApplySettings();
+            QuestGuruPlugin.Logger.LogInfo("Settings reset to defaults!");
+        }
+    }
+}

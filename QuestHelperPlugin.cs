@@ -1,0 +1,606 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using BepInEx;
+using BepInEx.Configuration;
+using BepInEx.Logging;
+using UnityEngine;
+using UnityEngine.UI;
+using HarmonyLib;
+
+namespace ErenshorQuestGuru
+{
+    [BepInPlugin(PluginInfo.PLUGIN_GUID, PluginInfo.PLUGIN_NAME, PluginInfo.PLUGIN_VERSION)]
+    public class QuestGuruPlugin : BaseUnityPlugin
+    {
+        private ConfigEntry<KeyCode> toggleTrackerKey;
+        private ConfigEntry<KeyCode> debugKey;
+        private ConfigEntry<KeyCode> settingsKey;
+        private ConfigEntry<bool> autoTrackNewQuests;
+        private ConfigEntry<bool> enableDebug;
+        private ConfigEntry<bool> enableNPCMarkers;
+
+        // Window positions
+        private ConfigEntry<float> trackerPosX;
+        private ConfigEntry<float> trackerPosY;
+        private ConfigEntry<float> questListPosX;
+        private ConfigEntry<float> questListPosY;
+
+        // UI Scaling
+        private ConfigEntry<float> uiScale;
+        private ConfigEntry<int> baseFontSize;
+
+        // Window sizes
+        private ConfigEntry<float> trackerWidth;
+        private ConfigEntry<float> trackerHeight;
+        private ConfigEntry<float> questListWidth;
+        private ConfigEntry<float> questListHeight;
+
+        // UI Theme
+        private ConfigEntry<string> uiTheme;
+
+        private QuestTracker questTracker;
+        private int currentTrackedQuestID = -1;  // Store QuestID instead of object to survive cache refresh
+
+        private bool showQuestTracker = true;
+        private Harmony harmony;
+
+        // NPC Quest Markers (like in WoW)
+        private Texture2D _questAvailableTexture;
+        private Texture2D _questTurnInTexture;
+        public const float QuestMarkerRadius = 70f;
+        private float _questMarkerUpdateInterval = 0.5f;
+        private float _lastQuestMarkerUpdate = 0f;
+        private bool _updatingQuestMarkers = false;
+
+        internal static new ManualLogSource Logger;
+
+        private void Awake()
+        {
+            Logger = base.Logger;
+
+            // Configuration
+            toggleTrackerKey = Config.Bind("Hotkeys", "ToggleTracker", KeyCode.T,
+                "Key to toggle quest tracker UI");
+
+            debugKey = Config.Bind("Hotkeys", "DebugKey", KeyCode.Insert,
+                "Key to print debug info about quests");
+
+            settingsKey = Config.Bind("Hotkeys", "SettingsKey", KeyCode.O,
+                "Key to open in-game settings menu");
+
+            autoTrackNewQuests = Config.Bind("Settings", "AutoTrackNewQuests", true,
+                "Automatically track newly accepted quests");
+
+            enableDebug = Config.Bind("Settings", "EnableDebug", true,
+                "Enable debug logging and features");
+
+            enableNPCMarkers = Config.Bind("Settings", "EnableNPCMarkers", true,
+                "Enable quest markers (! and ?) above NPCs");
+
+            // Window positions (can be edited in config file)
+            trackerPosX = Config.Bind("UI", "TrackerPositionX", -1f,
+                "Quest Tracker X position (set to -1 for auto right side)");
+            trackerPosY = Config.Bind("UI", "TrackerPositionY", 100f,
+                "Quest Tracker Y position");
+            questListPosX = Config.Bind("UI", "QuestListPositionX", 50f,
+                "Quest List X position");
+            questListPosY = Config.Bind("UI", "QuestListPositionY", 100f,
+                "Quest List Y position");
+
+            // UI Scaling (NEW for compact mode!)
+            uiScale = Config.Bind("UI", "UIScale", 1.0f,
+                "Overall UI scale factor (0.5 = 50% size, 1.0 = 100%, 1.5 = 150%). Smaller values create more compact UI.");
+            baseFontSize = Config.Bind("UI", "BaseFontSize", 12,
+                "Base font size for UI text (default: 12). Smaller values = more compact text.");
+
+            // Window sizes (can be customized in-game!)
+            trackerWidth = Config.Bind("UI", "TrackerWidth", 310f,
+                "Quest Tracker window width in pixels");
+            trackerHeight = Config.Bind("UI", "TrackerHeight", 400f,
+                "Quest Tracker window height in pixels");
+            questListWidth = Config.Bind("UI", "QuestListWidth", 360f,
+                "Quest List window width in pixels");
+            questListHeight = Config.Bind("UI", "QuestListHeight", 600f,
+                "Quest List window height in pixels");
+
+            // UI Theme
+            uiTheme = Config.Bind("UI", "Theme", "Dark",
+                "UI theme: Transparent, Dark, Gothic, Medieval, Forest, Royal");
+
+            // Apply Harmony patches
+            harmony = new Harmony(PluginInfo.PLUGIN_GUID);
+            harmony.PatchAll();
+
+            // Load quest marker textures
+            LoadTextures();
+
+            Logger.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} v{PluginInfo.PLUGIN_VERSION} loaded!");
+            Logger.LogInfo($"Press {toggleTrackerKey.Value} to toggle quest tracker");
+            Logger.LogInfo($"Press {debugKey.Value} to run debug and detect quest system");
+        }
+
+        private void Start()
+        {
+            // Initialize quest bridge to game's quest system
+            GameQuestBridge.Initialize();
+
+            // Initialize quest tracker UI
+            questTracker = gameObject.AddComponent<QuestTracker>();
+            questTracker.Plugin = this;
+
+            Logger.LogInfo("Quest Guru initialized and ready!");
+        }
+
+        private void Update()
+        {
+            // Toggle tracker visibility
+            if (Input.GetKeyDown(toggleTrackerKey.Value))
+            {
+                showQuestTracker = !showQuestTracker;
+                Logger.LogInfo($"Quest Tracker: {(showQuestTracker ? "Shown" : "Hidden")}");
+            }
+
+            // Debug key - print quest info
+            if (enableDebug.Value && Input.GetKeyDown(debugKey.Value))
+            {
+                RunDebugCommands();
+            }
+
+            // End key - manual refresh quests (useful after character switch)
+            if (Input.GetKeyDown(KeyCode.End))
+            {
+                Logger.LogInfo("Manual quest refresh triggered");
+                ForceRefreshQuests();
+            }
+
+            // Quest marker updates - but NOT every frame! Use timer to avoid lag
+            if (enableNPCMarkers.Value &&
+                GameData.PlayerControl != null &&
+                !GameData.InCharSelect &&
+                !GameData.Zoning &&
+                !_updatingQuestMarkers)
+            {
+                // Only update markers every 0.5 seconds
+                if (Time.time - _lastQuestMarkerUpdate > _questMarkerUpdateInterval)
+                {
+                    _lastQuestMarkerUpdate = Time.time;
+                    StartCoroutine(UpdateQuestMarkersCoroutine());
+                }
+            }
+        }
+
+        private void RunDebugCommands()
+        {
+            Logger.LogInfo("=== Quest Guru DEBUG ===");
+
+            // List all quest-related types
+            GameQuestBridge.DebugListQuestTypes();
+
+            // List quest components in scene
+            GameQuestBridge.DebugListQuestComponents();
+
+            // Try to get active quests
+            GameQuestBridge.RefreshQuestManager();
+            var activeQuests = GameQuestBridge.GetActiveQuests();
+
+            Logger.LogInfo($"Found {activeQuests.Count} active quests:");
+            foreach (var quest in activeQuests)
+            {
+                Logger.LogInfo($"  - [{quest.Level}] {quest.Name} (ID: {quest.QuestID})");
+                Logger.LogInfo($"    Status: {quest.Status}");
+                if (quest.CurrentObjective != null)
+                {
+                    Logger.LogInfo($"    Current: {quest.CurrentObjective.Description}");
+                }
+            }
+
+            Logger.LogInfo("=== END DEBUG ===");
+        }
+
+        // Called by UI when player clicks a quest to track
+        public void TrackQuest(QuestData quest)
+        {
+            currentTrackedQuestID = quest.QuestID;
+            Logger.LogInfo($"Now tracking quest: {quest.Name} (ID: {quest.QuestID})");
+        }
+
+        public void UntrackQuest()
+        {
+            currentTrackedQuestID = -1;
+        }
+
+        public QuestData GetTrackedQuest()
+        {
+            if (currentTrackedQuestID == -1)
+                return null;
+
+            // Find quest in tracker's cache (not GameQuestBridge which requires journal open)
+            var tracker = FindObjectOfType<QuestTracker>();
+            if (tracker != null)
+            {
+                return tracker.GetQuestByID(currentTrackedQuestID);
+            }
+
+            return null;
+        }
+
+        public bool IsTrackerVisible()
+        {
+            return showQuestTracker;
+        }
+
+        public void ForceRefreshQuests()
+        {
+            Logger.LogInfo("Forcing quest refresh...");
+            GameQuestBridge.RefreshQuestManager();
+        }
+
+        public Vector2 GetTrackerPosition()
+        {
+            float x = trackerPosX.Value;
+            if (x < 0) // Auto position on right side
+            {
+                x = Screen.width - 330;
+            }
+            return new Vector2(x, trackerPosY.Value);
+        }
+
+        public Vector2 GetQuestListPosition()
+        {
+            return new Vector2(questListPosX.Value, questListPosY.Value);
+        }
+
+        public float GetUIScale()
+        {
+            return uiScale.Value;
+        }
+
+        public int GetBaseFontSize()
+        {
+            return baseFontSize.Value;
+        }
+
+        public void SetUIScale(float scale)
+        {
+            uiScale.Value = Mathf.Clamp(scale, 0.5f, 1.5f);
+        }
+
+        public void SetBaseFontSize(int size)
+        {
+            baseFontSize.Value = Mathf.Clamp(size, 8, 20);
+        }
+
+        public float GetTrackerWidth()
+        {
+            return trackerWidth.Value;
+        }
+
+        public float GetTrackerHeight()
+        {
+            return trackerHeight.Value;
+        }
+
+        public float GetQuestListWidth()
+        {
+            return questListWidth.Value;
+        }
+
+        public float GetQuestListHeight()
+        {
+            return questListHeight.Value;
+        }
+
+        public void SetTrackerWidth(float width)
+        {
+            trackerWidth.Value = Mathf.Clamp(width, 200f, 800f);
+        }
+
+        public void SetTrackerHeight(float height)
+        {
+            trackerHeight.Value = Mathf.Clamp(height, 200f, 1000f);
+        }
+
+        public void SetQuestListWidth(float width)
+        {
+            questListWidth.Value = Mathf.Clamp(width, 250f, 800f);
+        }
+
+        public void SetQuestListHeight(float height)
+        {
+            questListHeight.Value = Mathf.Clamp(height, 300f, 1200f);
+        }
+
+        public KeyCode GetSettingsKey()
+        {
+            return settingsKey.Value;
+        }
+
+        public string GetUITheme()
+        {
+            return uiTheme.Value;
+        }
+
+        public void SetUITheme(string theme)
+        {
+            uiTheme.Value = theme;
+        }
+
+        private void OnDestroy()
+        {
+            // Clean up quest markers when plugin is destroyed
+            try
+            {
+                Character[] characters = UnityEngine.Object.FindObjectsOfType<Character>();
+                foreach (Character character in characters)
+                {
+                    Transform markerTransform = character.transform.Find("QuestMarkerWorldUI");
+                    if (markerTransform != null)
+                    {
+                        Destroy(markerTransform.gameObject);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"Error cleaning up quest markers: {ex}");
+            }
+        }
+
+        private void LoadTextures()
+        {
+            string pluginPath = Path.Combine(Paths.PluginPath, "ErenshorQuestGuru");
+            string questAvailablePath = Path.Combine(pluginPath, "quest-available.png");
+            string questCompletePath = Path.Combine(pluginPath, "quest-complete.png");
+
+            if (Directory.Exists(pluginPath))
+            {
+                _questAvailableTexture = LoadImage(questAvailablePath);
+                _questTurnInTexture = LoadImage(questCompletePath);
+            }
+            else
+            {
+                Logger.LogWarning($"Plugin texture directory not found at {pluginPath}");
+            }
+        }
+
+        private Texture2D LoadImage(string assetPath)
+        {
+            if (File.Exists(assetPath))
+            {
+                byte[] imageData = File.ReadAllBytes(assetPath);
+                Texture2D texture = new Texture2D(4, 4, TextureFormat.RGBA32, false);
+                if (!ImageConversion.LoadImage(texture, imageData))
+                {
+                    Logger.LogError($"Failed to load texture from {assetPath}");
+                }
+                return texture;
+            }
+            Logger.LogWarning($"Texture not found at {assetPath}");
+            return null;
+        }
+
+
+
+
+        private IEnumerator UpdateQuestMarkersCoroutine()
+        {
+            _updatingQuestMarkers = true;
+
+            // Find all characters within radius
+            Collider[] hitColliders = Physics.OverlapSphere(GameData.PlayerControl.transform.position, QuestMarkerRadius);
+
+            foreach (Collider collider in hitColliders)
+            {
+                if (collider == null)
+                    continue;
+
+                Character character = collider.GetComponent<Character>();
+                if (character == null)
+                    continue;
+
+                QuestManager questManager = character.GetComponent<QuestManager>();
+                NPCDialogManager npcDialogManager = character.GetComponent<NPCDialogManager>();
+
+                // Skip if not an NPC or doesn't have quest components
+                if ((questManager == null && npcDialogManager == null) ||
+                    !character.isNPC ||
+                    character.MiningNode ||
+                    character.transform == null ||
+                    character.MyNPC == null ||
+                    character.MyNPC.SimPlayer ||
+                    character.transform.name == "Player")
+                {
+                    continue;
+                }
+
+                // Check if NPC has quest to turn in
+                if (questManager != null && ShowQuestTurnInMarker(questManager))
+                {
+                    AttachMarkerToCharacter(character, _questTurnInTexture);
+                    continue;
+                }
+
+                // Check if NPC has quest available
+                if (ShowQuestAvailableMarker(character))
+                {
+                    AttachMarkerToCharacter(character, _questAvailableTexture);
+                    continue;
+                }
+
+                // Remove marker if no quests
+                Transform questMarkerWorldUI = character.transform.Find("QuestMarkerWorldUI");
+                if (questMarkerWorldUI != null)
+                {
+                    Destroy(questMarkerWorldUI.gameObject);
+                }
+
+                yield return null;
+            }
+
+            yield return new WaitForSeconds(_questMarkerUpdateInterval);
+            _updatingQuestMarkers = false;
+        }
+
+        private void AttachMarkerToCharacter(Character character, Texture2D texture)
+        {
+            Transform existingMarker = character.transform.Find("QuestMarkerWorldUI");
+            if (existingMarker != null)
+            {
+                QuestMarker component = existingMarker.GetComponent<QuestMarker>();
+                if (component != null)
+                {
+                    // Check if marker type matches texture
+                    if ((component.markerType == QuestMarker.Type.Available && texture == _questAvailableTexture) ||
+                        (component.markerType == QuestMarker.Type.TurnIn && texture == _questTurnInTexture))
+                    {
+                        return; // Marker already correct
+                    }
+                }
+                // Destroy old marker if type changed
+                Destroy(existingMarker.gameObject);
+            }
+
+            // Calculate height above NPC
+            Collider characterCollider = character.GetComponent<Collider>();
+            float height = characterCollider != null ? characterCollider.bounds.size.y : 2.5f;
+            height = Mathf.Clamp(height, 3f, 3f);
+
+            // Create marker
+            GameObject marker = CreateWorldMarker(texture);
+            marker.name = "QuestMarkerWorldUI";
+            marker.transform.SetParent(character.transform);
+            marker.transform.localPosition = new Vector3(0f, height + 0.1f, 0f);
+            marker.transform.rotation = Quaternion.identity;
+
+            // Add billboard component to face camera
+            BillboardToCamera billboard = marker.AddComponent<BillboardToCamera>();
+            billboard.enabled = true;
+
+            marker.SetActive(true);
+
+            // Add marker type component
+            QuestMarker questMarker = marker.AddComponent<QuestMarker>();
+            if (texture == _questAvailableTexture)
+            {
+                questMarker.markerType = QuestMarker.Type.Available;
+            }
+            else
+            {
+                questMarker.markerType = QuestMarker.Type.TurnIn;
+            }
+        }
+
+        private GameObject CreateWorldMarker(Texture2D texture)
+        {
+            GameObject markerObject = new GameObject("QuestMarkerWorldUI");
+
+            // Create canvas for world space UI
+            Canvas canvas = markerObject.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            canvas.sortingOrder = 0;
+
+            RectTransform canvasRect = canvas.GetComponent<RectTransform>();
+            canvasRect.sizeDelta = new Vector2(1f, 1f);
+            canvasRect.localScale = Vector3.one * 0.02f;
+
+            // Create icon image
+            GameObject iconObject = new GameObject("Icon");
+            iconObject.transform.SetParent(markerObject.transform, false);
+
+            RawImage rawImage = iconObject.AddComponent<RawImage>();
+            rawImage.texture = texture;
+            rawImage.raycastTarget = false;
+
+            RectTransform iconRect = rawImage.GetComponent<RectTransform>();
+            iconRect.sizeDelta = new Vector2(64f, 64f);
+
+            return markerObject;
+        }
+
+        private bool ShowQuestAvailableMarker(Character character)
+        {
+            NPCDialogManager dialogManager = character.GetComponent<NPCDialogManager>();
+            if (dialogManager == null)
+                return false;
+
+            // Check if player's class matches NPC's specific class requirements
+            if (dialogManager.SpecificClass.Count == 0 ||
+                dialogManager.SpecificClass.Contains(GameData.PlayerStats.CharacterClass))
+            {
+                foreach (NPCDialog dialog in dialogManager.MyDialogOptions)
+                {
+                    Quest questToAssign = dialog.QuestToAssign;
+                    if (questToAssign == null)
+                        continue;
+
+                    // Check if player doesn't have quest yet
+                    if (!GameData.HasQuest.Contains(questToAssign.DBName))
+                    {
+                        // Check if quest is not done, or if it's repeatable
+                        if (!GameData.IsQuestDone(questToAssign.DBName))
+                        {
+                            return true;
+                        }
+                        if (GameData.IsQuestDone(questToAssign.DBName) && questToAssign.repeatable)
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool ShowQuestTurnInMarker(QuestManager questManager)
+        {
+            foreach (Quest npcQuest in questManager.NPCQuests)
+            {
+                if (npcQuest == null)
+                    continue;
+
+                // Check if player has this quest
+                if (!GameData.HasQuest.Contains(npcQuest.QuestName))
+                    continue;
+
+                // Check if quest is already completed and not repeatable
+                if (GameData.CompletedQuests.Contains(npcQuest.QuestName) && !npcQuest.repeatable)
+                    continue;
+
+                // Check if player has all required items
+                List<Item> requiredItems = npcQuest.RequiredItems;
+                foreach (Item item in requiredItems)
+                {
+                    if (item == null || GameData.PlayerInv == null)
+                        continue;
+
+                    if (GameData.PlayerInv.HasItem(item, false))
+                        continue;
+
+                    // Check mouse slot
+                    if (GameData.PlayerInv.mouseSlot?.MyItem?.ItemName == item.ItemName)
+                        return true;
+
+                    // Check trade window
+                    if (GameData.TradeWindow?.LootSlots != null)
+                    {
+                        foreach (ItemIcon lootSlot in GameData.TradeWindow.LootSlots)
+                        {
+                            if (lootSlot.MyItem != null && lootSlot.MyItem.ItemName == item.ItemName)
+                                return true;
+                        }
+                    }
+
+                    return false; // Missing item
+                }
+
+                return true; // All items found
+            }
+
+            return false;
+        }
+    }
+}
